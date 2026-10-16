@@ -93,17 +93,17 @@ param
 
 $adtSession = @{
     # App variables.
-    AppVendor = ''
-    AppName = ''
-    AppVersion = ''
-    AppArch = ''
-    AppLang = ''
+    AppVendor = 'Nirsoft'
+    AppName = 'Multi-Monitor-Tool'
+    AppVersion = '2.25'
+    AppArch = 'x64'
+    AppLang = 'en-us'
     AppRevision = ''
     AppSuccessExitCodes = @(0)
     AppRebootExitCodes = @(1641, 3010)
     AppScriptVersion = '1.0.0'
-    AppScriptDate = 'YYYY-M-D'
-    AppScriptAuthor = ''
+    AppScriptDate = '10/12/2026'
+    AppScriptAuthor = 'Will Jarvill'
 
     # Install Titles (Only set here to override defaults set by the toolkit).
     InstallName = ''
@@ -129,8 +129,18 @@ function Install-ADTDeployment
     Show-ADTInstallationProgress
 
     ## <Perform Pre-Installation tasks here>
+    $mmtDir      = "$envProgramFiles\MultiMonitorTool"
+    $svvDir      = "$envProgramFiles\SoundVolumeView"
+    $launcher    = "$mmtDir\Apply-SoE-Display-Sound.cmd"
+    $taskName    = 'SoE Display and Sound Profile'
+    $desktopLnk  = "$envCommonDesktop\Apply SoE Display and Sound.lnk"
+    
+    ## Copy Files to Program Files
+    New-ADTFolder -Path $mmtDir
+    New-ADTFolder -Path $svvDir
 
-
+    Copy-ADTFile -Path "$($adtSession.DirFiles)\MultiMonitorTool\*" -Destination $mmtDir
+    Copy-ADTFile -Path "$($adtSession.DirFiles)\SoundVolumeView\*" -Destination $svvDir
     ##================================================
     ## MARK: Install
     ##================================================
@@ -152,7 +162,33 @@ function Install-ADTDeployment
     }
 
     ## <Perform Installation tasks here>
+# 1) Launcher that runs both commands in order. The logon task and the
+#    desktop shortcut both call this, so they can never drift apart.
+$launcherContent = @(
+    '@echo off'
+    'start "" /wait "C:\Program Files\MultiMonitorTool\MultiMonitorTool.exe" /LoadConfig "C:\Program Files\MultiMonitorTool\WC SoE Display Config.cfg"'
+    'start "" /wait "C:\Program Files\SoundVolumeView\SoundVolumeView.exe" /LoadProfile "C:\Program Files\MultiMonitorTool\SoE HyFlex Sound Profile.spr"'
+)
+Set-Content -LiteralPath $launcher -Value $launcherContent -Encoding ASCII -Force
 
+# 2) Scheduled task: runs at logon of ANY user, in that user's session
+#    (display and audio changes must run in the interactive user context).
+$action    = New-ScheduledTaskAction -Execute $launcher
+$trigger   = New-ScheduledTaskTrigger -AtLogOn
+$trigger.Delay = 'PT15S'    # give the desktop/audio stack time to settle
+$principal = New-ScheduledTaskPrincipal -GroupId 'S-1-5-32-545' -RunLevel Limited   # BUILTIN\Users
+$settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Applies SoE display layout and HyFlex sound profile at logon.' -Force | Out-Null
+
+# 3) Desktop shortcut for all users (Public Desktop) - double-click runs both commands
+New-ADTShortcut -Path $desktopLnk `
+    -TargetPath $launcher `
+    -WorkingDirectory $mmtDir `
+    -IconLocation "$env:SystemRoot\System32\shell32.dll" `
+    -IconIndex 15 `
+    -Description 'Apply SoE display layout and HyFlex sound profile' `
+    -WindowStyle 'Minimized'
 
     ##================================================
     ## MARK: Post-Install
@@ -182,7 +218,11 @@ function Uninstall-ADTDeployment
     Show-ADTInstallationProgress
 
     ## <Perform Pre-Uninstallation tasks here>
-
+    # Define everything locally so this hook never depends on variables set in Install.
+    $mmtDir     = 'C:\Program Files\MultiMonitorTool'
+    $svvDir     = 'C:\Program Files\SoundVolumeView'
+    $taskName   = 'SoE Display and Sound Profile'
+    $desktopLnk = 'C:\Users\Public\Desktop\Apply SoE Display and Sound.lnk'
 
     ##================================================
     ## MARK: Uninstall
@@ -201,7 +241,10 @@ function Uninstall-ADTDeployment
     }
 
     ## <Perform Uninstallation tasks here>
-
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-ADTFile   -Path $desktopLnk
+    Remove-ADTFolder -Path $mmtDir
+    Remove-ADTFolder -Path $svvDir
 
     ##================================================
     ## MARK: Post-Uninstallation
